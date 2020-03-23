@@ -163,7 +163,7 @@ plot_daily <- function(data, region_label, as_of_date, log_scale = FALSE) {
             y = "# Cases",
             x = "Date",
             color = "Metric Type",
-            caption = "Sources: JHU CSSE, COVID-19 Tracking Project"
+            caption = "Sources: JHU CSSE, COVID Tracking Project"
         ) +
         theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
         theme_classic()
@@ -187,7 +187,7 @@ plot_cumulative <- function(data, region_label, as_of_date, log_scale = FALSE) {
             y = "# Cases",
             x = "Date",
             color = "Metric Type",
-            caption = "Sources: JHU CSSE, COVID-19 Tracking Project"
+            caption = "Sources: JHU CSSE, COVID Tracking Project"
         ) +
         theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
         theme_classic()
