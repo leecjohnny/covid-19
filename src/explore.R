@@ -3,7 +3,7 @@ rm(list = ls())
 library(tidyverse)
 library(lubridate)
 library(scales)
-
+library(tidycensus)
 
 
 # Data Source: Johns Hopkins University Center for Systems Science and Engineering (JHU CSSE)
@@ -120,7 +120,12 @@ us_covid_combined <- rbind(
     ctp_metrics %>% filter(metric_type == "Total Tested")
 )
 
-
+## Get state populations
+census_api_key(Sys.getenv("CENSUS_API_KEY"))
+state_pop <- get_acs(geography = "state", variables = "B01003_001", year = 2018) %>%
+    rename(province_state = NAME,
+    population_num = estimate) %>%
+    select(province_state, population_num)
 
 compute_daily_change <- function(data) {
     data %>%
@@ -266,3 +271,45 @@ ggsave(paste0("../output/total_california_cases_", latest_date, ".png"), width =
 compute_cumulative_daily(cal_d) %>%
     plot_cumulative("California", latest_date, log_scale = TRUE)
 ggsave(paste0("../output/total_california_cases_log_scale_", latest_date, ".png"), width = 8, height = 6)
+
+## Compute Testing per Million People (Top 10 States )
+top_10_testing <- us_covid_combined %>%
+    filter(metric_type == "Total Tested") %>%
+    group_by(date, province_state) %>%
+    summarise(n_total = sum(cases)) %>%
+    ungroup() %>%
+    left_join(state_pop) %>%
+    mutate(testing_per_million = (n_total / population_num) * 1000000) %>%
+    filter(!is.na(testing_per_million)) %>%
+    arrange(desc(date), desc(testing_per_million)) %>%
+    top_n(1, date) %>%
+    top_n(10, testing_per_million) %>%
+    pull(province_state)
+
+us_covid_combined %>%
+    filter(metric_type == "Total Tested") %>%
+    group_by(date, province_state) %>%
+    summarise(n_total = sum(cases)) %>%
+    ungroup() %>%
+    left_join(state_pop) %>%
+    mutate(testing_per_million = (n_total / population_num) * 1000000) %>%
+    filter(!is.na(testing_per_million) & province_state %in% top_10_testing) %>%
+    ggplot(aes(x = date, y = testing_per_million, color = province_state)) +
+    geom_line(size = 1) +
+    geom_point(
+        data = . %>% filter(date == max(date)),
+        size = 2
+    ) +
+    scale_x_date(date_breaks = "1 week", date_labels = "%b %d") +
+    scale_y_continuous(labels = comma) +
+    labs(
+        title = "Top 10 States Testing per Million People",
+        subtitle = paste0("Data as of ", latest_date),
+        y = "# Tests Completed per Million People",
+        x = "Date",
+        color = "State",
+        caption = "Sources: JHU CSSE, COVID Tracking Project"
+    ) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    theme_classic()
+
