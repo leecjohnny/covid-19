@@ -3,7 +3,7 @@ rm(list = ls())
 library(tidyverse)
 library(lubridate)
 library(scales)
-
+library(tidycensus)
 
 
 # Data Source: Johns Hopkins University Center for Systems Science and Engineering (JHU CSSE)
@@ -11,7 +11,7 @@ library(scales)
 
 git_host_url <- "https://raw.githubusercontent.com"
 repo_path <- "/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/"
-filename <- "time_series_19-covid-%s.csv"
+filename <- "time_series_covid19_%s_global.csv"
 
 retrieve_jhu_data <- function(url) {
     read_csv(url) %>%
@@ -23,9 +23,9 @@ retrieve_jhu_data <- function(url) {
 
 jhu_metrics <- tribble(
     ~metric_type,
-    "Confirmed",
-    "Deaths",
-    "Recovered"
+    "confirmed",
+    "deaths",
+    "recovered"
     ) %>%
     mutate(
         get_urls = sprintf(paste0(git_host_url, repo_path, filename), metric_type),
@@ -33,12 +33,10 @@ jhu_metrics <- tribble(
     ) %>%
     unnest(cols = data) %>%
     select(-get_urls) %>%
-    ## "Recovered" time series currently does not match with daily reports
-    filter(metric_type != "Recovered") %>%
+    mutate(metric_type = str_to_title(metric_type)) %>%
     pivot_wider(names_from = metric_type, values_from = cases) %>%
     mutate(
-        Active = Confirmed - Deaths
-        ## - Recovered
+        Active = Confirmed - Deaths - Recovered
     ) %>%
     pivot_longer(-(1:5), names_to = "metric_type", values_to = "cases")
 
@@ -55,12 +53,14 @@ jhu_metrics <- tribble(
 
 # Metric type names
 # > jhu_metrics %>% distinct(metric_type)
-# # A tibble: 4 x 1
-#   metric_type
-#   <chr>
+# A tibble: 4 x 1
+  # metric_type
+  # <chr>
 # 1 Confirmed
 # 2 Deaths
-# 3 Active
+# 3 Recovered
+# 4 Active
+
 
 # Data Source: COVID Tracking Project
 # URL: https://covidtracking.com/api/
@@ -68,10 +68,23 @@ jhu_metrics <- tribble(
 ctp_state_daily_csv_url <- "http://covidtracking.com/api/states/daily.csv"
 
 ctp_metrics <- read_csv(ctp_state_daily_csv_url) %>%
-    select(-dateChecked) %>%
+    select(
+        date,
+        state,
+        positive,
+        negative,
+        pending,
+        hospitalized,
+        death,
+        totalTestResults
+    ) %>%
     ## Coerce into same shape as JHU data
     rename(
-        "Total Tested" = total,
+        "Total Test Results" = totalTestResults,
+        "Confirmed" = positive,
+        "Pending Test Results" = pending,
+        "Hospitalized" = hospitalized,
+        "Deaths" = death,
         province_state = state
     ) %>%
     rename_at(vars(-date, -province_state), str_to_title) %>%
@@ -108,24 +121,29 @@ ctp_metrics <- read_csv(ctp_state_daily_csv_url) %>%
 # # A tibble: 6 x 1
 #   metric_type
 #   <chr>
-# 1 Positive
+# 1 Confirmed
 # 2 Negative
-# 3 Pending
+# 3 Pending Test Results
 # 4 Hospitalized
-# 5 Death
-# 6 Total Tested
+# 5 Deaths
+# 6 Total Test Results
 
 us_covid_combined <- rbind(
     jhu_metrics %>% filter(country_region == "US"),
-    ctp_metrics %>% filter(metric_type == "Total Tested")
+    ctp_metrics %>% filter(metric_type %in% c("Total Test Results", "Hospitalized"))
 )
 
-
+## Get state populations
+census_api_key(Sys.getenv("CENSUS_API_KEY"))
+state_pop <- get_acs(geography = "state", variables = "B01003_001", year = 2018) %>%
+    rename(province_state = NAME,
+    population_num = estimate) %>%
+    select(province_state, population_num)
 
 compute_daily_change <- function(data) {
     data %>%
         group_by(date, metric_type) %>%
-        summarise(n_total = sum(cases)) %>%
+        summarise(n_total = sum(cases, na.rm = TRUE)) %>%
         group_by(metric_type) %>%
         arrange(date) %>%
         mutate(
@@ -138,7 +156,7 @@ compute_daily_change <- function(data) {
 compute_cumulative_daily <- function(data) {
     data %>%
         group_by(date, metric_type) %>%
-        summarise(n_total = sum(cases)) %>%
+        summarise(n_total = sum(cases, na.rm = TRUE)) %>%
         group_by(metric_type) %>%
         arrange(date) %>%
         mutate(metric_type_str = paste0(metric_type, ": ", comma(last(n_total)))) %>%
@@ -163,7 +181,7 @@ plot_daily <- function(data, region_label, as_of_date, log_scale = FALSE) {
             y = "# Cases",
             x = "Date",
             color = "Metric Type",
-            caption = "Sources: JHU CSSE, COVID-19 Tracking Project"
+            caption = "Sources: JHU CSSE, COVID Tracking Project"
         ) +
         theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
         theme_classic()
@@ -187,7 +205,7 @@ plot_cumulative <- function(data, region_label, as_of_date, log_scale = FALSE) {
             y = "# Cases",
             x = "Date",
             color = "Metric Type",
-            caption = "Sources: JHU CSSE, COVID-19 Tracking Project"
+            caption = "Sources: JHU CSSE, COVID Tracking Project"
         ) +
         theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
         theme_classic()
@@ -205,7 +223,7 @@ jhu_metrics %>%
     group_by(metric_type) %>%
     filter(date == max(date)) %>%
     summarise(
-        n_total = sum(cases)
+        n_total = sum(cases, na.rm = TRUE)
     )
 
 ## US Total Summary
@@ -216,7 +234,7 @@ us_d %>%
     group_by(metric_type) %>%
     filter(date == max(date)) %>%
     summarise(
-        n_total = sum(cases)
+        n_total = sum(cases, na.rm = TRUE)
     )
 
 ## Daily US Case Growth
@@ -239,15 +257,17 @@ compute_cumulative_daily(us_d) %>%
 ggsave(paste0("../output/total_us_cases_log_scale_", latest_date, ".png"), width = 8, height = 6)
 
 
-cal_d <- us_covid_combined %>%
-        filter(country_region == "US" & province_state == "California")
+cal_d <- ctp_metrics %>%
+        filter(country_region == "US" &
+            province_state == "California" &
+            metric_type != "Pending Test Results" )
 
 ## CA Total Summary
 cal_d %>%
     group_by(metric_type) %>%
     filter(date == max(date)) %>%
     summarise(
-        n_total = sum(cases)
+        n_total = sum(cases, na.rm = TRUE)
     )
 
 ## Daily California Case Growth
@@ -266,3 +286,51 @@ ggsave(paste0("../output/total_california_cases_", latest_date, ".png"), width =
 compute_cumulative_daily(cal_d) %>%
     plot_cumulative("California", latest_date, log_scale = TRUE)
 ggsave(paste0("../output/total_california_cases_log_scale_", latest_date, ".png"), width = 8, height = 6)
+
+## Compute Testing per Million People (Top 10 States )
+top_10_testing <- us_covid_combined %>%
+    filter(metric_type == "Total Test Results") %>%
+    group_by(date, province_state) %>%
+    summarise(n_total = sum(cases)) %>%
+    ungroup() %>%
+    left_join(state_pop) %>%
+    mutate(testing_per_million = (n_total / population_num) * 1000000) %>%
+    filter(!is.na(testing_per_million)) %>%
+    arrange(desc(date), desc(testing_per_million)) %>%
+    top_n(1, date) %>%
+    top_n(10, testing_per_million) %>%
+    mutate(province_state = fct_reorder(province_state, desc(testing_per_million))) %>%
+    pull(province_state)
+
+us_covid_combined %>%
+    filter(metric_type == "Total Test Results") %>%
+    group_by(date, province_state) %>%
+    summarise(n_total = sum(cases)) %>%
+    left_join(state_pop) %>%
+    mutate(
+        testing_per_million = (n_total / population_num) * 1000000
+    ) %>%
+    ungroup() %>%
+    filter(!is.na(testing_per_million) & province_state %in% top_10_testing) %>%
+    group_by(province_state) %>%
+    mutate(province_state_str = factor(province_state, levels = levels(top_10_testing))) %>%
+    ggplot(aes(x = date, y = testing_per_million, color = province_state_str)) +
+    geom_line(size = 1) +
+    geom_point(
+        data = . %>% filter(date == max(date)),
+        size = 2
+    ) +
+    scale_x_date(date_breaks = "1 week", date_labels = "%b %d") +
+    scale_y_continuous(labels = comma) +
+    labs(
+        title = "Top 10 States Testing per Million People",
+        subtitle = paste0("Data as of ", latest_date),
+        y = "# Tests Completed per Million People",
+        x = "Date",
+        color = "States (in order)",
+        caption = "Sources: JHU CSSE, COVID Tracking Project"
+    ) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    theme_classic()
+ggsave(paste0("../output/top_10_states_testing_per_million_", latest_date, ".png"), width = 8, height = 6)
+
